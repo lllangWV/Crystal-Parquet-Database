@@ -1,0 +1,81 @@
+[build-system]
+requires = ["setuptools>=64", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+
+[tool.setuptools_scm]
+local_scheme="no-local-version"
+version_file = "pyprocar/_version.py"
+version_scheme="python-simplified-semver"
+
+
+[project]
+name = "PyProcar"
+authors = [
+    {name = "Francisco Muñoz", email = "fvmunoz@gmail.com"},
+    {name = "Logan Lang", email = "lllang@mix.wvu.edu"},
+    {name = "Aldo Romero", email = "alromero@mail.wvu.edu"},
+    {name = "Sobhit Singh", email = "smsingh@mix.wvu.edu"},
+    {name = "Uthpala Herath", email = "ukh0001@mix.wvu.edu"},
+    {name = "Pedram Tavadze", email = "petavazohi@mix.wvu.edu"},
+    {name = "Eric Bousquet", email = "eric.bousquet@uliege.be"},
+    {name = "Xu He", email = "mailhexu@gmail.com"},
+    {name = "Reese Boucher"},
+    {name = "Freddy Farah"}
+]
+
+description = "A Python library for electronic structure pre/post-processing."
+readme = {file = "README.md", content-type = "text/markdown"}  # Ensure this matches the file used
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["materials", "science", "plotting", "electronic structure", "DFT"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+]
+
+dynamic = ["version"]
+
+requires-python = ">=3.8"
+
+[project.urls]
+homepage = "https://github.com/romerogroup/pyprocar"
+documentation = "https://romerogroup.github.io/pyprocar/"
+Issues = "https://github.com/romerogroup/pyprocar/issues"
+Changelog = "https://github.com/romerogroup/pyprocar/CHANGELOG.md"
+
+[project.scripts]
+pyprocar-download = "scripts.download:main"
+
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pyprocar*", "scripts*"]
+exclude = ["pyprocar.tests*"]
+
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64", "osx-arm64", "osx-64", "win-64"]
+
+
+[tool.pixi.dependencies]
+compilers = "*"
+cmake = "*"
+
+[tool.pixi.system-requirements]
+cuda = "12.0"
+
+
+[tool.pixi.pypi-dependencies]
+crystpqdb = { path= ".", editable = true}
+platformdirs = "*"
+python-dotenv = "*"
+matplotlib = "*"
+numpy = "*"
+pandas = "*"
+parquetdb = "*"
+ipykernel = "*"
+prefect = "*"
+
+
+[tool.pixi.environments]
