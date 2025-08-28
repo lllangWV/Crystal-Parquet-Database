@@ -5,30 +5,21 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools_scm]
 local_scheme="no-local-version"
-version_file = "pyprocar/_version.py"
+version_file = "crystpqdb/_version.py"
 version_scheme="python-simplified-semver"
 
 
 [project]
-name = "PyProcar"
+name = "crystpqdb"
 authors = [
-    {name = "Francisco Muñoz", email = "fvmunoz@gmail.com"},
     {name = "Logan Lang", email = "lllang@mix.wvu.edu"},
-    {name = "Aldo Romero", email = "alromero@mail.wvu.edu"},
-    {name = "Sobhit Singh", email = "smsingh@mix.wvu.edu"},
-    {name = "Uthpala Herath", email = "ukh0001@mix.wvu.edu"},
-    {name = "Pedram Tavadze", email = "petavazohi@mix.wvu.edu"},
-    {name = "Eric Bousquet", email = "eric.bousquet@uliege.be"},
-    {name = "Xu He", email = "mailhexu@gmail.com"},
-    {name = "Reese Boucher"},
-    {name = "Freddy Farah"}
 ]
 
-description = "A Python library for electronic structure pre/post-processing."
+description = "A Python library for Crystal Parquet Database."
 readme = {file = "README.md", content-type = "text/markdown"}  # Ensure this matches the file used
 license = "MIT"
 license-files = ["LICENSE"]
-keywords = ["materials", "science", "plotting", "electronic structure", "DFT"]
+keywords = []
 classifiers = [
     "Programming Language :: Python :: 3",
 ]
@@ -38,19 +29,19 @@ dynamic = ["version"]
 requires-python = ">=3.8"
 
 [project.urls]
-homepage = "https://github.com/romerogroup/pyprocar"
-documentation = "https://romerogroup.github.io/pyprocar/"
-Issues = "https://github.com/romerogroup/pyprocar/issues"
-Changelog = "https://github.com/romerogroup/pyprocar/CHANGELOG.md"
+homepage = "https://github.com/llangWV/Crystal-Parquet-Database"
+documentation = "https://llangWV.github.io/Crystal-Parquet-Database/"
+Issues = "https://github.com/llangWV/Crystal-Parquet-Database/issues"
+Changelog = "https://github.com/llangWV/Crystal-Parquet-Database/CHANGELOG.md"
 
 [project.scripts]
-pyprocar-download = "scripts.download:main"
+crystpqdb-download = "scripts.download:main"
 
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["pyprocar*", "scripts*"]
-exclude = ["pyprocar.tests*"]
+include = ["crystpqdb*", "scripts*"]
+exclude = ["crystpqdb.tests*"]
 
 
 [tool.pixi.workspace]
@@ -76,6 +67,8 @@ pandas = "*"
 parquetdb = "*"
 ipykernel = "*"
 prefect = "*"
+mp_api = "*"
+jarvis-tools = "*"
 
 
 [tool.pixi.environments]

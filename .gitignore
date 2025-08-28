@@ -171,6 +171,8 @@ reports/
 notebooks/
 venv_docs/
 
+_version.py
+
 .pypirc
 
 api_token.txt
