@@ -4,22 +4,104 @@ import logging
 import os
 import re
 import shutil
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, List
+from typing import Dict, Final, List, Optional, Type
 
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from mp_api.client import MPRester
 
-from .base import DatabaseDownloader, DownloadConfig
-
 load_dotenv()
 
 CHUNK_BYTES: Final[int] = 1024 * 1024
 LOGGER = logging.getLogger(__name__)
+
+@dataclass(frozen=True)
+class DownloadConfig:
+    """Configuration for database downloaders.
+
+    Parameters
+    ----
+    source_name : str
+        Canonical name of the data source (e.g., "alexandria3d").
+    base_url : str, optional
+        Base URL for the remote dataset or API.
+    api_key : str, optional
+        API key or token if the source requires authentication.
+    timeout_seconds : int, default=60
+        Network timeout to use for remote requests.
+    num_workers : int, default=8
+        Number of worker threads/processes to use for parallel I/O.
+    from_scratch : bool, default=False
+        If True, remove any existing data at destination before
+        downloading.
+    dataset_name : str, optional
+        Dataset identifier for sources that provide multiple datasets
+        (e.g., JARVIS). When provided, implementations may use this to
+        determine which dataset to download.
+
+    """
+
+    source_name: str
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
+    timeout_seconds: int = 60
+    num_workers: int = 8
+    from_scratch: bool = False
+    dataset_name: Optional[str] = None
+
+
+class DatabaseDownloader(ABC):
+    """Abstract interface for downloading a crystal database locally.
+
+    Implementations should handle retrieving the dataset from the
+    configured remote source and materializing it under the given
+    directory path. Implementations must be idempotent and safe to
+    re-run; callers may invoke ``download`` multiple times.
+
+    Notes
+    ----
+    - Implementations should create the target directory if it does not
+      exist.
+    - The return value should be the directory containing the
+      downloaded dataset for easy chaining.
+    - Keep network I/O contained within this layer; transformation of
+      the downloaded files should happen elsewhere.
+    """
+
+    def __init__(self, config: DownloadConfig) -> None:
+        self._config = config
+
+    @property
+    def config(self) -> DownloadConfig:
+        """Return the immutable downloader configuration."""
+
+        return self._config
+
+    @abstractmethod
+    def download(self, dirpath: Path) -> Path:
+        """Download or update the dataset under ``dirpath``.
+
+        Parameters
+        ----
+        dirpath : pathlib.Path
+            Directory path where the dataset should be stored
+            (implementation may create subdirectories as needed).
+
+        Returns
+        ----
+        pathlib.Path
+            Path to the directory containing the downloaded dataset.
+        """
+
+        raise NotImplementedError
+
+
+
 
 
 def _http_get(url: str, timeout_seconds: int) -> requests.Response:
@@ -208,6 +290,26 @@ class MaterialsProjectDownloader(DatabaseDownloader):
                     "structure": structure,
                     "composition": composition,
                     "band_gap": doc.get("band_gap", None),
+                    "n": doc.get("n", None),
+                    "piezoelectric_modulus": doc.get("piezoelectric_modulus", None),
+                    "e_electronic": doc.get("e_electronic", None),
+                    "e_ionic": doc.get("e_ionic", None),
+                    "e_total": doc.get("e_total", None),
+                    "g_reuss": doc.get("g_reuss", None),
+                    "g_voigt": doc.get("g_voigt", None),
+                    "g_vrh": doc.get("g_vrh", None),
+                    "k_reuss": doc.get("k_reuss", None),
+                    "k_voigt": doc.get("k_voigt", None),
+                    "k_vrh": doc.get("k_vrh", None),
+                    "poisson_ratio": doc.get("poisson_ratio", None),
+                    "surface_energy_anisotropy": doc.get("surface_energy_anisotropy", None),
+                    "total_energy": doc.get("total_energy", None),
+                    "uncorrected_energy": doc.get("uncorrected_energy", None),
+                    "weighted_work_function": doc.get("weighted_work_function", None),
+                    "weighted_surface_energy": doc.get("weighted_surface_energy", None),
+                    "total_magnetization": doc.get("total_magnetization", None),
+                    "is_gap_direct": doc.get("is_gap_direct", None),
+                    "magnetic_ordering": doc.get("magnetic_ordering", None),
                     "formation_energy_per_atom": doc.get("formation_energy_per_atom", None),
                     "e_above_hull": doc.get("e_above_hull", None),
                     "is_stable": doc.get("is_stable", None),
@@ -292,5 +394,52 @@ class JarvisDownloader(DatabaseDownloader):
                     pass
 
         return dirpath
+
+
+
+_REGISTRY: Dict[str, Type[DatabaseDownloader]] = {
+    "alexandria1d": Alexandria1DDownloader,
+    "alexandria2d": Alexandria2DDownloader,
+    "alexandria3d": Alexandria3DDownloader,
+    "materials_project": MaterialsProjectDownloader,
+    "materials-project": MaterialsProjectDownloader,
+    "materialsproject": MaterialsProjectDownloader,
+    "jarvis": JarvisDownloader,
+}
+
+
+def get_downloader(source_name: str, config: DownloadConfig | None = None) -> DatabaseDownloader:
+    """Create a downloader instance by source name.
+
+    Parameters
+    ----
+    source_name : str
+        Canonical or alias name of the source (e.g., "alexandria3d",
+        "materials_project", "jarvis"). Case-insensitive.
+    config : DownloadConfig, optional
+        Optional explicit configuration. If not provided, a minimal
+        configuration will be created from the ``source_name`` only.
+
+    Returns
+    ----
+    DatabaseDownloader
+        A constructed downloader instance for the requested source.
+
+    Raises
+    ----
+    KeyError
+        If the provided ``source_name`` is not registered.
+    """
+
+    normalized = source_name.strip().lower().replace(" ", "_")
+    try:
+        klass = _REGISTRY[normalized]
+    except KeyError as exc:
+        raise KeyError(f"Unknown downloader source: {source_name}") from exc
+
+    if config is None:
+        config = DownloadConfig(source_name=normalized)
+
+    return klass(config=config)
 
 
