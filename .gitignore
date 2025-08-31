@@ -186,5 +186,6 @@ detailedCommitMessageTemporaryFile.txt
 
 # pixi environments
 .pixi/*
+.pixi
 !.pixi/config.toml
 
