@@ -1,74 +1,41 @@
-from dataclasses import dataclass, field
-from typing import Annotated, Any
+from pandera.typing.pandas import Series
+import pandera.pandas as pa
 
-import numpy as np
-import pandas as pd
-from parquetdb import ParquetDB
-from pydantic import (
-    BaseModel,
-    BeforeValidator,
-    ConfigDict,
-    Field,
-    PlainSerializer,
-    field_serializer,
-    field_validator,
-)
-from pymatgen.core.structure import Structure
+from typing import TypedDict
 
-NdArrayType = Annotated[
-    np.ndarray,
-    BeforeValidator(lambda v: v if isinstance(v, np.ndarray) else np.array(v)),
-    PlainSerializer(lambda v: v.tolist(), return_type=list),
-]
+class LatticeDict(TypedDict):
+    matrix: list[list[float]]
+    a: float
+    b: float
+    c: float
+    alpha: float
+    beta: float
+    gamma: float
+    pbc: list[bool]
+    volume: float
 
-def validate_structure(structure: Structure | dict | None):
-    if structure is None:
-        return None
-    if isinstance(structure, dict):
-        return Structure.from_dict(structure)
-    return structure
-
-StructureType = Annotated[
-    Structure,
-    BeforeValidator(validate_structure),
-    PlainSerializer(lambda v: v.as_dict() if v is not None else None, return_type=dict),
-]
-
-
-
-
-class SymmetryData(BaseModel):
-    crystal_system: str | None = None
-    symbol: str | None = None
-    number: int | None = None
-    point_group: str | None = None
-    symprec: float | None = None
-    angle_tolerance: float | None = None
-    version: str | None = None
+class SpeciesDict(TypedDict):
+    element: str
+    occu: float
     
-
-class SymmetryData(BaseModel):
-    crystal_system: str | None = None
-    symbol: str | None = None
-    number: int | None = None
-    point_group: str | None = None
-    symprec: float | None = None
-    angle_tolerance: float | None = None
-    version: str | None = None
+class PropertiesDict(TypedDict):
+    magmom: float
+    charge: float
+    forces: list[float]
     
-class LatticeData(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-    matrix: NdArrayType | None = None
-    a: float | None = None
-    b: float | None = None
-    c: float | None = None
-    alpha: float | None = None
-    beta: float | None = None
-    gamma: float | None = None
-    volume: float | None = None
+class SiteDict(TypedDict):
+    species: list[str]
+    abc: list[float]
+    xyz: list[float]
+    properties: PropertiesDict
+    label: str
     
-class HasPropsData(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+class StructureDict(TypedDict):
+    charge: float
+    lattice: LatticeDict
+    sites: list[SiteDict]
+    
+class HasPropsData(TypedDict):
     materials: bool | None = None
     thermo: bool | None = None
     xas: bool | None = None
@@ -92,8 +59,7 @@ class HasPropsData(BaseModel):
     substrates: bool | None = None
     
     
-class CrystPQData(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+class DataDict(TypedDict):
     band_gap: float | None = None
     band_gap_ind: float | None = None
     band_gap_dir: float | None = None
@@ -127,63 +93,33 @@ class CrystPQData(BaseModel):
     total_magnetization: float | None = None
     magnetic_ordering: str | None = None
     
-    stress: NdArrayType | None = None
+    stress: list[list[float]] | None = None
     
-    
-    is_gap_direct: bool | None = None
     is_stable: bool | None = None
     
-    @field_validator("is_gap_direct", mode="before")
-    def validate_is_gap_direct(cls, v):
-        if isinstance(v, bool):
-            return v
-        elif isinstance(v, str) and v.lower() in ["true", "false"]:
-            return bool(v)
-        elif isinstance(v, int) and v in [0, 1]:
-            return bool(v)
-        else:
-            return None
+class SymmetryData(TypedDict):
+    crystal_system: str | None = None
+    symbol: str | None = None
+    number: int | None = None
+    point_group: str | None = None
+    symprec: float | None = None
+    angle_tolerance: float | None = None
+    version: str | None = None
     
-    @field_validator("is_stable", mode="before")
-    def validate_is_stable(cls, v):
-        if isinstance(v, bool):
-            return v
-        elif isinstance(v, str):
-            return bool(v)
-        elif isinstance(v, int):
-            return bool(v)
-        elif isinstance(v, float) and isinstance(v, np.nan):
-            return None
-        return v
-
-
-class CrystPQRecord(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    source_database: str
-    source_dataset: str
-    source_id: str
-    species: list[str] | None = None
-    frac_coords: NdArrayType | None = None
-    cart_coords: NdArrayType | None = None
-    lattice: LatticeData | None = None
-    structure: StructureType | None = None
-    symmetry: SymmetryData | None = None
-    data: CrystPQData | None = None
+class CrystPQData(pa.DataFrameModel):
+    class Config:
+        add_missing_columns=True
+        
+    source_database: Series[str] = pa.Field(nullable=True)
+    source_dataset: Series[str] = pa.Field(nullable=True)
+    source_id: Series[str] = pa.Field(nullable=True)
+    species: Series[list[str]] = pa.Field(nullable=True)
+    cart_coords: Series[list[list[float]]] = pa.Field(nullable=True)
+    frac_coords: Series[list[list[float]]] = pa.Field(nullable=True)
+    lattice: Series[LatticeDict] = pa.Field(nullable=True)
+    structure: Series[StructureDict] = pa.Field(nullable=True)
+    data: Series[DataDict] = pa.Field(nullable=True)
+    symmetry: Series[SymmetryData] = pa.Field(nullable=True)
+    has_props: Series[HasPropsData] = pa.Field(nullable=True)
     
-    
-    def __eq__(self, other):
-        if not isinstance(other, self.__class__):
-            return NotImplemented
-        # Compare arrays using np.array_equal
-        is_equal = True
-        for key, value in self.__dict__.items():
-            if isinstance(value, np.ndarray):
-                if not np.allclose(value, other.__dict__[key]):
-                    is_equal = False
-            else:
-                if value != other.__dict__[key]:
-                    is_equal = False
-        return is_equal
-
 

@@ -24,9 +24,10 @@ from pymatgen.core.structure import Structure
 
 from crystpqdb.db import (
     CrystPQData,
-    CrystPQRecord,
     HasPropsData,
-    LatticeData,
+    DataDict,
+    LatticeDict,
+    StructureDict,
     SymmetryData,
 )
 from crystpqdb.loaders.base import BaseLoader

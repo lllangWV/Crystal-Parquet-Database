@@ -21,7 +21,7 @@ from mp_api.client import MPRester
 from parquetdb import ParquetDB
 
 from crystpqdb import db
-from crystpqdb.db import CrystPQData, CrystPQRecord, HasPropsData, SymmetryData
+from crystpqdb.db import CrystPQData, DataDict, HasPropsData, SymmetryData
 
 load_dotenv()
 
