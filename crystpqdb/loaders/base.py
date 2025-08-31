@@ -1,0 +1,173 @@
+
+import bz2
+import json
+import logging
+import os
+import re
+import shutil
+from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, Final, Iterable, List, Optional, Type
+
+import numpy as np
+import pandas as pd
+import requests
+from bs4 import BeautifulSoup
+from dotenv import load_dotenv
+from mp_api.client import MPRester
+from parquetdb import ParquetDB
+
+from crystpqdb.db import CrystPQData, CrystPQRecord, HasPropsData, SymmetryData
+
+load_dotenv()
+
+CHUNK_BYTES: Final[int] = 1024 * 1024
+LOGGER = logging.getLogger(__name__)
+
+@dataclass
+class LoaderConfig:
+    """Configuration for database downloaders.
+
+    Parameters
+    ----
+    source_name : str
+        Canonical name of the data source (e.g., "alexandria3d").
+    base_url : str, optional
+        Base URL for the remote dataset or API.
+    api_key : str, optional
+        API key or token if the source requires authentication.
+    timeout_seconds : int, default=60
+        Network timeout to use for remote requests.
+    num_workers : int, default=8
+        Number of worker threads/processes to use for parallel I/O.
+    from_scratch : bool, default=False
+        If True, remove any existing data at destination before
+        downloading.
+    dataset_name : str, optional
+        Dataset identifier for sources that provide multiple datasets
+        (e.g., JARVIS). When provided, implementations may use this to
+        determine which dataset to download.
+
+    """
+
+    data_dir: Path | str = Path("./data")
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+    timeout_seconds: int = 60
+    num_workers: int = 8
+    from_scratch: bool = False
+    
+    def __post_init__(self):
+        self.data_dir = Path(self.data_dir)
+
+
+class BaseLoader(ABC):
+    """Abstract interface for loading a crystal database locally.
+
+    Implementations should handle retrieving the dataset from the
+    configured remote source and materializing it under the given
+    directory path. Implementations must be idempotent and safe to
+    re-run; callers may invoke ``load`` multiple times.
+
+    Notes
+    ----
+    - Implementations should create the target directory if it does not
+      exist.
+    - The return value should be the directory containing the
+      downloaded dataset for easy chaining.
+    - Keep network I/O contained within this layer; transformation of
+      the downloaded files should happen elsewhere.
+    """
+
+    def __init__(self, config: LoaderConfig) -> None:
+        self._config = config
+
+    @property
+    @abstractmethod
+    def source_database(self) -> str:
+        """Return the source name."""
+        pass
+    
+    @property
+    @abstractmethod
+    def source_dataset(self) -> str:
+        """Return the dataset name."""
+        pass
+    
+    @abstractmethod
+    def _download(self, dirpath: Path | str) -> Path:
+        """Download or update the dataset under ``dirpath``.
+
+        Parameters
+        ----
+        dirpath : pathlib.Path
+            Directory path where the dataset should be stored
+            (implementation may create subdirectories as needed).
+
+        Returns
+        ----
+        pathlib.Path
+            Path to the directory containing the downloaded dataset.
+        """
+
+        raise NotImplementedError
+    
+    @abstractmethod
+    def load(self, filepath: Path) -> Iterable[pd.DataFrame] | list[pd.DataFrame] | pd.DataFrame:
+        """Load the dataset from ``filepath``."""
+        raise NotImplementedError
+    @property
+    def config(self) -> LoaderConfig:
+        """Return the immutable downloader configuration."""
+        return self._config
+    
+    @property
+    def raw_dir(self) -> Path:
+        raw_dir = self.config.data_dir / self.source_database / self.source_dataset
+        return raw_dir
+    
+    def download(self, dirpath: Path | str | None = None) -> Path:
+        dirpath = Path(dirpath) if dirpath is not None else self.raw_dir
+        if self.config.from_scratch and dirpath.exists():
+            LOGGER.info("from_scratch=True, removing existing directory: %s", dirpath)
+            shutil.rmtree(dirpath, ignore_errors=True)
+        
+        if dirpath.exists():
+            LOGGER.info("Directory %s already exists and is not empty", dirpath)
+            return dirpath
+        else:
+            LOGGER.info("Downloading dataset into %s", dirpath)
+            return self._download(dirpath)
+
+    
+    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Transform raw records into validated ``CrystPQRecord`` objects.
+
+        Parameters
+        ----
+        data : dict
+            Data to transform.
+
+        Returns
+        ----
+        list of CrystPQRecord
+            Validated records ready to be serialized and ingested.
+        """
+        return df
+            
+    def __iter__(self) -> Iterable[pd.DataFrame]:
+        raw_dir = self.download()
+        results = self.load(raw_dir)
+        
+        if isinstance(results, pd.DataFrame):
+            df_transformed = self.transform(results)
+            yield df_transformed
+        else:
+            for df in results:
+                df_transformed = self.transform(df)
+                yield df_transformed
+
+
+
