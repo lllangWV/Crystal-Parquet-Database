@@ -7,7 +7,7 @@ from pathlib import Path
 
 def set_verbose_level(verbose: int):
     user_logger = logging.getLogger("user")
-    package_logger = logging.getLogger("pyprocar")
+    package_logger = logging.getLogger("crystpqdb")
 
     if verbose == 0:
         user_logger.setLevel(logging.CRITICAL)
@@ -77,7 +77,7 @@ logging_config = {
     "loggers": {
         "crystpqdb": {
             "level": "INFO",
-            "handlers": ["file"],
+            "handlers": ["file", "console"],
             "propagate": False,
         },
         "user": {"level": "ERROR", "handlers": ["user_console"], "propagate": False},
