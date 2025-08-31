@@ -13,10 +13,12 @@ from typing import Any, Dict, Final, Iterable, List, Optional, Type
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from mp_api.client import MPRester
+from parquetdb import ParquetDB
 from pymatgen.core.structure import Structure
 
 from crystpqdb.db import (
@@ -141,98 +143,50 @@ class BaseAlexandriaLoader(BaseLoader):
 
         return dirpath
     
-    
-    def _load_json(self, filepath: Path) -> pd.DataFrame:
-        with open(filepath, "r") as f:
-            data = json.load(f)
-              
-        field_names = CrystPQRecord.model_fields.keys()
-        columnar: Dict[str, List[Any]] = {k: [] for k in field_names}
-        
-        entries = data.get("entries", [])
-        for doc in entries:            
-            structure_dict = doc.get("structure", None)
-            lattice_data = None
-            structure=None
-            species = None
-            frac_coords = None
-            cart_coords = None
-            
-            if structure_dict is not None:
-                structure = Structure.from_dict(structure_dict)
-                frac_coords = structure.frac_coords
-                cart_coords = structure.cart_coords
-                species = [specie.name for specie in structure.species]
-                lattice_data = LatticeData(
-                    matrix=structure.lattice.matrix,
-                    a=structure.lattice.a,
-                    b=structure.lattice.b,
-                    c=structure.lattice.c,
-                    alpha=structure.lattice.alpha,
-                    beta=structure.lattice.beta,
-                    gamma=structure.lattice.gamma,
-                    volume=structure.lattice.volume)
-        
-            data_dict = doc.get("data", {})
-            
-            band_gap_ind = data_dict.get("band_gap_ind", None)
-            band_gap_dir = data_dict.get("band_gap_dir", None)
-            if band_gap_ind is not None and band_gap_dir is not None:
-                if band_gap_ind == 0 and band_gap_dir > 0:
-                    band_gap = band_gap_dir
-                elif band_gap_ind > 0 and band_gap_dir == 0:
-                    band_gap = band_gap_ind
-                elif band_gap_ind > 0 and band_gap_dir > 0:
-                    band_gap = min(band_gap_ind, band_gap_dir)
-                else:
-                    band_gap = None
-                
-            crystpq_data = CrystPQData(
-                band_gap=band_gap,
-                band_gap_ind = band_gap_ind,
-                band_gap_dir = band_gap_dir,
-                
-                dos_ef = data_dict.get("dos_ef", None),
-  
-                energy_total=data_dict.get("energy_corrected", None),
-                energy_corrected = data_dict.get("energy_corrected", None),
-                energy_uncorrected = data_dict.get("energy_total", None),
-                energy_formation = data_dict.get("e_form", None),
-                energy_above_hull = data_dict.get("e_above_hull", None),
-                energy_phase_seperation = data_dict.get("e_phase_seperation", None),
-                
-                total_magnetization=data_dict.get("total_mag"),
-
-                stress=doc.get("stress"),
-            )
-            
-            
-
-            record = CrystPQRecord(
-                source_database=self.source_database,
-                source_dataset=self.source_dataset,
-                source_id=str(doc.get("mat_id", None)),
-                species=species,
-                frac_coords=frac_coords,
-                cart_coords=cart_coords,
-                lattice=lattice_data,
-                structure=structure,
-                data=crystpq_data
-            )
-
-            record_dict = record.model_dump(mode="json")
-            for k in field_names:
-                columnar[k].append(record_dict[k])
-                
-        df = pd.DataFrame(columnar)
-                
-        return df
-    
     def load(self, data_dirpath: Path) -> Iterable[pd.DataFrame]:
         json_files = data_dirpath.glob("*.json")
         for json_file in json_files:
-            df = self._load_json(json_file)
-            yield df
+            with open(json_file, "r") as f:
+                data = json.load(f)
+            yield data.get("entries", [])
+            
+    def transform(self, table: pa.Table) -> pd.DataFrame:
+        import pyarrow.compute as pc
+
+        # transformed_df = pd.DataFrame()
+        n_rows = len(table)
+        # xyz = table.field("sites")
+        # sites = table.field("structure.sites")
+        structure = table["structure"]
+        
+        sites=pc.struct_field(structure,"sites")
+        xyz = pc.struct_field(pc.list_flatten(sites),"xyz")
+        # xyz = pc.struct_field(sites.values,"xyz")
+        # a_field = pc.list_value_field(sites, "a")
+        
+        # arr_data = replace_empty_structs(column_array.combine_chunks().values)
+        arr_offsets = sites.combine_chunks().offsets
+        arr = pa.ListArray.from_arrays(arr_offsets, xyz)
+        print(len(sites))
+        print(len(arr))
+        # xyz = pc.struct_field(table,["structure","sites"])
+        # print(len(xyz))
+        # site = xyz.field("sites")
+        # print(len(site))
+        # print(xyz)
+        
+        # frac_coords = pc.map_lookup(table,query_key = ("structure","sites","frac_coords"))
+        
+        # tmp_dict = {
+        #     "source_database": [self.source_database] * n_rows,
+        #     "source_dataset": [self.source_dataset] * n_rows,
+        #     "source_id": df["material_id"],
+        #     "species": df["species"],
+        #     "frac_coords": df["frac_coords"],
+        #     "cart_coords": df["cart_coords"],
+        #     "lattice": df["lattice"],
+        # }
+        # return transformed_df
 
 
 

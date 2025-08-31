@@ -13,12 +13,14 @@ from typing import Dict, Final, Iterable, List, Optional, Type
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from mp_api.client import MPRester
 from parquetdb import ParquetDB
 
+from crystpqdb import db
 from crystpqdb.db import CrystPQData, CrystPQRecord, HasPropsData, SymmetryData
 
 load_dotenv()
@@ -57,8 +59,9 @@ class LoaderConfig:
     base_url: Optional[str] = None
     timeout_seconds: int = 60
     num_workers: int = 8
-    from_scratch: bool = False
-    
+    download_from_scratch: bool = False
+    ingest_from_scratch: bool = True
+    transform_from_scratch: bool = True
     def __post_init__(self):
         self.data_dir = Path(self.data_dir)
 
@@ -96,6 +99,57 @@ class BaseLoader(ABC):
         """Return the dataset name."""
         pass
     
+    @property
+    def dataset_dir(self) -> Path:
+        """Return the directory path for the dataset."""
+        return self.config.data_dir / self.source_database / self.source_dataset
+    
+    @property
+    def raw_dir(self) -> Path:
+        return self.dataset_dir / "raw"
+    
+    @property
+    def interim_dir(self) -> Path:
+        return self.dataset_dir / "interim"
+    
+    @property
+    def pqdb_dir(self) -> Path:
+        return self.interim_dir / "pqdb"
+    
+    @property
+    def transformed_dir(self) -> Path:
+        return self.interim_dir / "transformed_pqdv"
+    
+    @property
+    def pqdb(self) -> ParquetDB:
+        """Return the ParquetDB."""
+        return ParquetDB(self.pqdb_dir)
+    
+    @property
+    def transformed_pqdb(self) -> ParquetDB:
+        """Return the ParquetDB."""
+        return ParquetDB(self.transformed_dir)
+    
+    @property
+    def config(self) -> LoaderConfig:
+        """Return the immutable downloader configuration."""
+        return self._config
+    
+    
+    def download(self, dirpath: Path | str | None = None) -> Path:
+        dirpath = Path(dirpath) if dirpath is not None else self.raw_dir
+        if self.config.download_from_scratch and dirpath.exists():
+            LOGGER.info("from_scratch=True, removing existing directory: %s", dirpath)
+            shutil.rmtree(dirpath, ignore_errors=True)
+        
+        if dirpath.exists():
+            LOGGER.info("Directory %s already exists and is not empty", dirpath)
+            return dirpath
+        else:
+            LOGGER.info("Downloading dataset into %s", dirpath)
+            return self._download(dirpath)
+
+    
     @abstractmethod
     def _download(self, dirpath: Path | str) -> Path:
         """Download or update the dataset under ``dirpath``.
@@ -115,33 +169,26 @@ class BaseLoader(ABC):
         raise NotImplementedError
     
     @abstractmethod
-    def load(self, filepath: Path) -> Iterable[pd.DataFrame] | list[pd.DataFrame] | pd.DataFrame:
+    def load(self, filepath: Path) -> Iterable[pd.DataFrame] | list[pd.DataFrame]:
         """Load the dataset from ``filepath``."""
         raise NotImplementedError
-    @property
-    def config(self) -> LoaderConfig:
-        """Return the immutable downloader configuration."""
-        return self._config
     
-    @property
-    def raw_dir(self) -> Path:
-        raw_dir = self.config.data_dir / self.source_database / self.source_dataset
-        return raw_dir
     
-    def download(self, dirpath: Path | str | None = None) -> Path:
-        dirpath = Path(dirpath) if dirpath is not None else self.raw_dir
-        if self.config.from_scratch and dirpath.exists():
-            LOGGER.info("from_scratch=True, removing existing directory: %s", dirpath)
-            shutil.rmtree(dirpath, ignore_errors=True)
+    def ingest_pqdb(self, data: dict | list[dict] | pd.DataFrame) -> None:
+        """Inject the ParquetDB into the dataset."""
+        self.pqdb.create(data, convert_to_fixed_shape=False)
         
-        if dirpath.exists():
-            LOGGER.info("Directory %s already exists and is not empty", dirpath)
-            return dirpath
-        else:
-            LOGGER.info("Downloading dataset into %s", dirpath)
-            return self._download(dirpath)
-
-    
+    def normalize_pqdb(self, **kwargs) -> None:
+        """Normalize the ParquetDB."""
+        self.pqdb.normalize(**kwargs)
+        
+    def read_pyarrow_table(self, **kwargs) -> pa.Table:
+        """Read the ParquetDB into a PyArrow Table."""
+        if "rebuild_nested_struct" not in kwargs:
+            kwargs["rebuild_nested_struct"] = True
+        
+        return self.pqdb.read(**kwargs)
+        
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         """Transform raw records into validated ``CrystPQRecord`` objects.
 
@@ -155,19 +202,41 @@ class BaseLoader(ABC):
         list of CrystPQRecord
             Validated records ready to be serialized and ingested.
         """
-        return df
-            
-    def __iter__(self) -> Iterable[pd.DataFrame]:
-        raw_dir = self.download()
-        results = self.load(raw_dir)
         
-        if isinstance(results, pd.DataFrame):
-            df_transformed = self.transform(results)
-            yield df_transformed
-        else:
-            for df in results:
-                df_transformed = self.transform(df)
-                yield df_transformed
+        return df
+    
+    def run(self):
+        if self.config.download_from_scratch and self.raw_dir.exists():
+            shutil.rmtree(self.raw_dir, ignore_errors=True)
+            
+        self.download()
+        
+        if self.config.ingest_from_scratch and self.pqdb_dir.exists():
+            shutil.rmtree(self.pqdb_dir, ignore_errors=True)
+            
+        for data in self.load(self.raw_dir):
+            self.ingest_pqdb(data)
+            
+        self.normalize_pqdb()
+        table = self.read_pyarrow_table()
+        
+        if self.config.transform_from_scratch and self.transformed_dir.exists():
+            shutil.rmtree(self.transformed_dir, ignore_errors=True)
+        return self.transform(table)
+            
+    # def __iter__(self) -> Iterable[pd.DataFrame]:
+    #     raw_dir = self.download()
+    #     results = self.load(raw_dir)
+        
+    #     # if isinstance(results, pd.DataFrame):
+    #     #     df_transformed = self.transform(results)
+    #     #     yield df_transformed
+    #     # else:
+    #     #     for df in results:
+    #     #         df_transformed = self.transform(df)
+    #     #         yield df_transformed
+        
+    #     yield self.pqdb.read()
 
 
 

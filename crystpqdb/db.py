@@ -34,6 +34,19 @@ StructureType = Annotated[
     PlainSerializer(lambda v: v.as_dict() if v is not None else None, return_type=dict),
 ]
 
+
+
+
+class SymmetryData(BaseModel):
+    crystal_system: str | None = None
+    symbol: str | None = None
+    number: int | None = None
+    point_group: str | None = None
+    symprec: float | None = None
+    angle_tolerance: float | None = None
+    version: str | None = None
+    
+
 class SymmetryData(BaseModel):
     crystal_system: str | None = None
     symbol: str | None = None
