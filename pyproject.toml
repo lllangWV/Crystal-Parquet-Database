@@ -52,13 +52,15 @@ platforms = ["linux-64", "osx-arm64", "osx-64", "win-64"]
 [tool.pixi.dependencies]
 compilers = "*"
 cmake = "*"
+pandera-pandas = ">=0.26.1,<0.27"
+pandera-polars = ">=0.26.1,<0.27"
 
 [tool.pixi.system-requirements]
 cuda = "12.0"
 
 
 [tool.pixi.pypi-dependencies]
-crystpqdb = { path= ".", editable = true}
+crystpqdb = {path = ".", editable = true}
 platformdirs = "*"
 python-dotenv = "*"
 matplotlib = "*"
@@ -71,4 +73,11 @@ mp_api = "*"
 jarvis-tools = "*"
 
 
+[tool.pixi.feature.test]
+pypi-dependencies = {pytest = "*", pytest-cov = "*"}
+
+
 [tool.pixi.environments]
+test = { features = ["test"], solve-group = "default" }
+dev = { features = ["test"], solve-group = "default" }
+
