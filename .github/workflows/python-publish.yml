@@ -18,11 +18,6 @@ jobs:
       with:
         fetch-depth: 0  # Fetch all history so we can access all commit logs
 
-    - name: Set up Python
-      uses: actions/setup-python@v3
-      with:
-        python-version: '3.x'
-
     - name: Setup pixi
       uses: prefix-dev/setup-pixi@v0.9.0
       with:
