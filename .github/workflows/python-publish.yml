@@ -1,0 +1,38 @@
+name: Upload Python Package
+
+on:
+  push:
+    branches:
+      - main
+
+
+permissions:
+  contents: write  # This allows the workflow to push changes
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+      
+      with:
+        fetch-depth: 0  # Fetch all history so we can access all commit logs
+
+    - name: Setup pixi
+      uses: prefix-dev/setup-pixi@v0.9.0
+      with:
+        environments: >-
+          build
+        
+    - name: Test Build 
+      run: |
+        pixi run -e setuptools_scm
+        pixi run -e build
+        pixi run -e setuptools_scm
+
+    - name: Publish package
+      if: success()
+      uses: pypa/gh-action-pypi-publish@27b31702a0e7fc50959f5ad993c78deac1bdfc29
+      with:
+        user: __token__
+        password: ${{ secrets.PYPI_API_TOKEN }}

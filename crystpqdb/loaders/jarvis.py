@@ -20,7 +20,9 @@ from jarvis.db.figshare import data as jarvis_data
 from jarvis.db.figshare import get_db_info
 from mp_api.client import MPRester
 
-from crystpqdb.db import CrystPQData, CrystPQRecord, HasPropsData, SymmetryData
+from crystpqdb.db import CrystPQData, DataDict, HasPropsData, SymmetryData
+from crystpqdb.loaders.base import BaseLoader
+from crystpqdb.db import LatticeDict, StructureDict
 
 load_dotenv()
 

@@ -7,26 +7,17 @@ import re
 import shutil
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Final, Iterable, List, Optional, Type
+from typing import Final, Iterable, List
 
-import numpy as np
-import pandas as pd
+import pyarrow as pa
+import pyarrow.compute as pc
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from mp_api.client import MPRester
-from pymatgen.core.structure import Structure
 
-from crystpqdb.db import (
-    CrystPQData,
-    CrystPQRecord,
-    HasPropsData,
-    LatticeData,
-    SymmetryData,
-)
 from crystpqdb.loaders.base import BaseLoader, LoaderConfig
+from crystpqdb.utils.pyarrow_utils import get_listArray_struct_fields
 
 load_dotenv()
 
@@ -141,98 +132,63 @@ class BaseAlexandriaLoader(BaseLoader):
 
         return dirpath
     
-    
-    def _load_json(self, filepath: Path) -> pd.DataFrame:
-        with open(filepath, "r") as f:
-            data = json.load(f)
-              
-        field_names = CrystPQRecord.model_fields.keys()
-        columnar: Dict[str, List[Any]] = {k: [] for k in field_names}
-        
-        entries = data.get("entries", [])
-        for doc in entries:            
-            structure_dict = doc.get("structure", None)
-            lattice_data = None
-            structure=None
-            species = None
-            frac_coords = None
-            cart_coords = None
-            
-            if structure_dict is not None:
-                structure = Structure.from_dict(structure_dict)
-                frac_coords = structure.frac_coords
-                cart_coords = structure.cart_coords
-                species = [specie.name for specie in structure.species]
-                lattice_data = LatticeData(
-                    matrix=structure.lattice.matrix,
-                    a=structure.lattice.a,
-                    b=structure.lattice.b,
-                    c=structure.lattice.c,
-                    alpha=structure.lattice.alpha,
-                    beta=structure.lattice.beta,
-                    gamma=structure.lattice.gamma,
-                    volume=structure.lattice.volume)
-        
-            data_dict = doc.get("data", {})
-            
-            band_gap_ind = data_dict.get("band_gap_ind", None)
-            band_gap_dir = data_dict.get("band_gap_dir", None)
-            if band_gap_ind is not None and band_gap_dir is not None:
-                if band_gap_ind == 0 and band_gap_dir > 0:
-                    band_gap = band_gap_dir
-                elif band_gap_ind > 0 and band_gap_dir == 0:
-                    band_gap = band_gap_ind
-                elif band_gap_ind > 0 and band_gap_dir > 0:
-                    band_gap = min(band_gap_ind, band_gap_dir)
-                else:
-                    band_gap = None
-                
-            crystpq_data = CrystPQData(
-                band_gap=band_gap,
-                band_gap_ind = band_gap_ind,
-                band_gap_dir = band_gap_dir,
-                
-                dos_ef = data_dict.get("dos_ef", None),
-  
-                energy_total=data_dict.get("energy_corrected", None),
-                energy_corrected = data_dict.get("energy_corrected", None),
-                energy_uncorrected = data_dict.get("energy_total", None),
-                energy_formation = data_dict.get("e_form", None),
-                energy_above_hull = data_dict.get("e_above_hull", None),
-                energy_phase_seperation = data_dict.get("e_phase_seperation", None),
-                
-                total_magnetization=data_dict.get("total_mag"),
-
-                stress=doc.get("stress"),
-            )
-            
-            
-
-            record = CrystPQRecord(
-                source_database=self.source_database,
-                source_dataset=self.source_dataset,
-                source_id=str(doc.get("mat_id", None)),
-                species=species,
-                frac_coords=frac_coords,
-                cart_coords=cart_coords,
-                lattice=lattice_data,
-                structure=structure,
-                data=crystpq_data
-            )
-
-            record_dict = record.model_dump(mode="json")
-            for k in field_names:
-                columnar[k].append(record_dict[k])
-                
-        df = pd.DataFrame(columnar)
-                
-        return df
-    
-    def load(self, data_dirpath: Path) -> Iterable[pd.DataFrame]:
+    def _load(self, data_dirpath: Path) -> Iterable[dict]:
         json_files = data_dirpath.glob("*.json")
         for json_file in json_files:
-            df = self._load_json(json_file)
-            yield df
+            with open(json_file, "r") as f:
+                data = json.load(f)
+            yield data.get("entries", [])
+            
+    def _transform(self, table: pa.Table) -> pa.Table:
+        n_rows = len(table)
+        
+        data_fields = table["data"].combine_chunks()
+        structure = table["structure"].combine_chunks()
+        sites=pc.struct_field(structure,"sites")
+        charge = pc.struct_field(structure,"charge")
+        lattice_struct_array = pc.struct_field(structure,"lattice")
+        cart_coords = get_listArray_struct_fields(sites,["xyz"])["xyz"]
+        frac_coords = get_listArray_struct_fields(sites,["abc"])["abc"]
+        labels = get_listArray_struct_fields(sites,["label"])["label"]
+        species_list_array = get_listArray_struct_fields(sites,["species"])["species"]
+        
+        species_list_array = get_listArray_struct_fields(sites,["species"])["species"]
+        offsets = species_list_array.offsets
+        raw_element = pc.struct_field(species_list_array.flatten(recursive=True),"element")
+        elements = pa.ListArray.from_arrays(offsets,raw_element)
+
+        
+        source_database = [self.source_database] * n_rows
+        source_dataset = [self.source_dataset] * n_rows
+        source_id = pc.struct_field(data_fields,"mat_id")
+        
+        data = pa.Table.from_pydict({
+            "band_gap_ind":pc.struct_field(data_fields,"band_gap_ind"),
+            "band_gap_dir":pc.struct_field(data_fields,"band_gap_dir"),
+            "dos_ef":pc.struct_field(data_fields,"dos_ef"),
+            "energy_total":pc.struct_field(data_fields,"energy_total"),
+            "energy_uncorrected":pc.struct_field(data_fields,"energy_total"),
+            "energy_corrected":pc.struct_field(data_fields,"energy_corrected"),
+            "energy_formation":pc.struct_field(data_fields,"e_form"),
+            "energy_above_hull":pc.struct_field(data_fields,"e_above_hull"),
+            "energy_phase_seperation":pc.struct_field(data_fields,"e_phase_separation"),
+            "total_magnetization":pc.struct_field(data_fields,"total_mag"),
+        })
+        
+        pqdb_data = {
+            "source_database":source_database,
+            "source_dataset":source_dataset,
+            "source_id":source_id,
+            "species":elements,
+            "cart_coords":cart_coords,
+            "frac_coords":frac_coords,
+            "lattice":lattice_struct_array,
+            "structure":structure,
+            "data":data.to_struct_array().combine_chunks(),
+        }
+        
+        return pa.Table.from_pydict(pqdb_data)
+ 
 
 
 

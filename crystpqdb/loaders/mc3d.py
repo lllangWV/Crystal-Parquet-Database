@@ -1,34 +1,20 @@
 
-import bz2
-import json
 import logging
 import os
 import re
 import shutil
 import zipfile
-from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, Final, List, Optional, Type
+from typing import Final, Iterable
 from urllib.parse import unquote, urlparse
 
-import numpy as np
-import pandas as pd
+import pyarrow as pa
 import requests
-from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from mp_api.client import MPRester
 from pymatgen.core import Structure
 from pymatgen.core.structure import Structure
 
-from crystpqdb.db import (
-    CrystPQData,
-    CrystPQRecord,
-    HasPropsData,
-    LatticeData,
-    SymmetryData,
-)
 from crystpqdb.loaders.base import BaseLoader
 
 load_dotenv()
@@ -37,14 +23,7 @@ CHUNK_BYTES: Final[int] = 1024 * 1024
 LOGGER = logging.getLogger(__name__)
 
 class MC3DLoader(BaseLoader):
-    """Loader for MC3D data.
 
-    The MC3D database is a collection of materials data from the Materials Cloud.
-    It contains the following files:
-    - files_description.md
-    - MC3D-provenance.aiida
-    - MC3D-structure.aiida
-    """
     mc3d_cif_url: Final[str] = "https://archive.materialscloud.org/records/eqzc6-e2579/files/MC3D-cifs.zip?download=1"
     mc3d_provenance_url: Final[str] = "https://archive.materialscloud.org/records/eqzc6-e2579/files/MC3D-provenance.aiida?download=1"
     mc3d_structure_url: Final[str] = "https://archive.materialscloud.org/records/eqzc6-e2579/files/MC3D-structures.aiida?download=1"
@@ -108,45 +87,40 @@ class MC3DLoader(BaseLoader):
 
         return dirpath
     
-    def _load_cif(self, filepath: Path) -> pd.DataFrame:
+    def _load(self, dirpath: Path) -> Iterable[dict]:
+        
+        dirpath = dirpath / "MC3D-cifs" / "mc3d"
+        cif_files = dirpath.glob("*.cif")
+        with ThreadPoolExecutor(max_workers=self.config.num_workers) as executor:
+            data = list(executor.map(self._load_cif, cif_files))
+        yield data
+    
+    def _load_cif(self, filepath: Path) -> dict:
         structure = Structure.from_file(filepath)          
         species = [specie.name for specie in structure.species]
         frac_coords = structure.frac_coords
         cart_coords = structure.cart_coords
-        lattice_data = LatticeData(
-            matrix=structure.lattice.matrix,
-            a=structure.lattice.a,
-            b=structure.lattice.b,
-            c=structure.lattice.c,
-            alpha=structure.lattice.alpha,
-            beta=structure.lattice.beta,
-            gamma=structure.lattice.gamma,
-            volume=structure.lattice.volume)
-        record = CrystPQRecord(
-            source_database=self.source_database,
-            source_dataset=self.source_dataset,
-            source_id=str(filepath.stem),
-            species=species,
-            frac_coords=frac_coords,
-            cart_coords=cart_coords,
-            lattice=lattice_data,
-            structure=structure,
-            data=None
-        )
-        return record.model_dump(mode="json")
+        lattice_data = {
+            "matrix":structure.lattice.matrix.tolist(),
+            "a":structure.lattice.a,
+            "b":structure.lattice.b,
+            "c":structure.lattice.c,
+            "alpha":structure.lattice.alpha,
+            "beta":structure.lattice.beta,
+            "gamma":structure.lattice.gamma,
+            "pbc":structure.lattice.pbc,
+            "volume":structure.lattice.volume}
+        record = {
+            "source_database":self.source_database,
+            "source_dataset":self.source_dataset,
+            "source_id":str(filepath.stem),
+            "species":species,
+            "frac_coords":frac_coords.tolist(),
+            "cart_coords":cart_coords.tolist(),
+            "lattice":lattice_data,
+            "structure":structure.as_dict(),
+        }
+        return record
     
-    def load(self, data_dirpath: Path) -> pd.DataFrame:
-        structures_data_dirpath = data_dirpath / "MC3D-cifs" / "mc3d"
-        cif_files = structures_data_dirpath.glob("*.cif")
-        with ThreadPoolExecutor(max_workers=self.config.num_workers) as executor:
-            record_dicts = list(executor.map(self._load_cif, cif_files))
-
-        field_names = CrystPQRecord.model_fields.keys()
-        columnar: Dict[str, List[Any]] = {k: [] for k in field_names}
-        for record_dict in record_dicts:
-            for k in field_names:
-                columnar[k].append(record_dict[k])
-                
-        df = pd.DataFrame(columnar)
-                
-        return df
+    def _transform(self, table: pa.Table) -> pa.Table:
+        return table.drop_columns("id")

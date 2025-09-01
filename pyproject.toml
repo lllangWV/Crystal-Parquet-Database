@@ -71,13 +71,21 @@ ipykernel = "*"
 prefect = "*"
 mp_api = "*"
 jarvis-tools = "*"
+huggingface_hub = { version = "*", extras = ["cli", "hf-transfer"] }
 
 
 [tool.pixi.feature.test]
 pypi-dependencies = {pytest = "*", pytest-cov = "*"}
 
+[tool.pixi.feature.build]
+pypi-dependencies = {build = "*", setuptools-scm = "*"}
+
+[tool.pixi.feature.github_actions]
+pypi-dependencies = {PyGithub = "*", openai = "*"}
+
 
 [tool.pixi.environments]
 test = { features = ["test"], solve-group = "default" }
-dev = { features = ["test"], solve-group = "default" }
+build = { features = ["build"], solve-group = "default" }
+dev = { features = ["test", "build", "github_actions"], solve-group = "default" }
 

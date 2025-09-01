@@ -2,8 +2,6 @@ import numpy as np
 import pytest
 from pymatgen.core import Structure
 
-from crystpqdb.db import CrystPQData, CrystPQRecord, HasPropsData, SymmetryData
-
 
 @pytest.fixture
 def symmetry():
@@ -58,8 +56,6 @@ def data(symmetry, has_props):
     "material_id" : "1234567890",
     "nelements" : 1,
     "nsites" : 40,
-    "symmetry" : symmetry,
-    "has_props" : has_props,
 }
 
 @pytest.fixture
@@ -83,6 +79,8 @@ def record(data, structure):
     "lattice" : np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
     "structure" : structure,
     "data" : data,
+        "symmetry" : symmetry,
+    "has_props" : has_props,
 }
     
     
@@ -101,44 +99,44 @@ def record_other(data, structure):
     "data" : data,
 }
 
-class TestCrystPQRecord:
+# class TestCrystPQRecord:
     
-    def test_init(self, record):
-        record = CrystPQRecord(**record)
-        assert record.source_database == "mp"
-        assert record.source_dataset == "1d"
-        assert record.source_id == "1234567890"
-        assert record.energy == 1.1
-        assert record.species == ["A", "B", "C"]
-        assert np.allclose(record.frac_coords, np.array([0.0, 0.0, 0.0]))
-        assert np.allclose(record.cart_coords, np.array([0.0, 0.0, 0.0]))
-        assert np.allclose(record.lattice, np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]))
-        assert record.data.symmetry.number == 221
-        assert isinstance(record.structure, Structure)
+#     def test_init(self, record):
+#         record = CrystPQRecord(**record)
+#         assert record.source_database == "mp"
+#         assert record.source_dataset == "1d"
+#         assert record.source_id == "1234567890"
+#         assert record.energy == 1.1
+#         assert record.species == ["A", "B", "C"]
+#         assert np.allclose(record.frac_coords, np.array([0.0, 0.0, 0.0]))
+#         assert np.allclose(record.cart_coords, np.array([0.0, 0.0, 0.0]))
+#         assert np.allclose(record.lattice, np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]))
+#         assert record.data.symmetry.number == 221
+#         assert isinstance(record.structure, Structure)
         
-    def test_serialization(self, record):
-        record = CrystPQRecord(**record)
-        record_json = record.model_dump(mode="json")
+#     def test_serialization(self, record):
+#         record = CrystPQRecord(**record)
+#         record_json = record.model_dump(mode="json")
 
-        assert isinstance(record_json, dict)
-        assert isinstance(record_json["frac_coords"], list)
-        assert isinstance(record_json["cart_coords"], list)
-        assert isinstance(record_json["lattice"], list)
-        assert isinstance(record_json["structure"], dict)
+#         assert isinstance(record_json, dict)
+#         assert isinstance(record_json["frac_coords"], list)
+#         assert isinstance(record_json["cart_coords"], list)
+#         assert isinstance(record_json["lattice"], list)
+#         assert isinstance(record_json["structure"], dict)
         
-    def test_deserialization(self, record):
-        record = CrystPQRecord(**record)
-        record_json = record.model_dump(mode="json")
-        print(record_json)
+#     def test_deserialization(self, record):
+#         record = CrystPQRecord(**record)
+#         record_json = record.model_dump(mode="json")
+#         print(record_json)
         
-        test_record = CrystPQRecord(**record_json)
-        print(test_record)
-        assert isinstance(test_record.structure, Structure)
-        assert test_record == record
+#         test_record = CrystPQRecord(**record_json)
+#         print(test_record)
+#         assert isinstance(test_record.structure, Structure)
+#         assert test_record == record
         
-    def test_equality(self, record, record_other):
-        record = CrystPQRecord(**record)
-        record_other = CrystPQRecord(**record_other)
-        assert record == record
-        assert record != record_other
+#     def test_equality(self, record, record_other):
+#         record = CrystPQRecord(**record)
+#         record_other = CrystPQRecord(**record_other)
+#         assert record == record
+#         assert record != record_other
         
