@@ -26,9 +26,9 @@ jobs:
         
     - name: Test Build 
       run: |
-        pixi run -e setuptools_scm
-        pixi run -e build
-        pixi run -e setuptools_scm
+        pixi run -e build python -m setuptools_scm
+        pixi run -e build python -m build
+        pixi run -e build python -m setuptools_scm
 
     - name: Publish package
       if: success()
