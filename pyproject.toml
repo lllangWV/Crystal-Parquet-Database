@@ -71,6 +71,7 @@ ipykernel = "*"
 prefect = "*"
 mp_api = "*"
 jarvis-tools = "*"
+huggingface_hub = { version = "*", extras = ["cli", "hf-transfer"] }
 
 
 [tool.pixi.feature.test]
