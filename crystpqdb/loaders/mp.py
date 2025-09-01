@@ -1,33 +1,17 @@
 
-import bz2
 import json
 import logging
 import os
-import re
-import shutil
-from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Final, Iterable, List, Optional, Type
+from typing import Final, Iterable
 
-import numpy as np
-import pandas as pd
-import requests
-from bs4 import BeautifulSoup
+import pyarrow as pa
+import pyarrow.compute as pc
 from dotenv import load_dotenv
 from mp_api.client import MPRester
-from pymatgen.core.structure import Structure
 
-from crystpqdb.db import (
-    CrystPQData,
-    DataDict,
-    HasPropsData,
-    LatticeDict,
-    StructureDict,
-    SymmetryData,
-)
 from crystpqdb.loaders.base import BaseLoader
+from crystpqdb.utils.pyarrow_utils import get_listArray_struct_fields
 
 load_dotenv()
 
@@ -35,10 +19,6 @@ CHUNK_BYTES: Final[int] = 1024 * 1024
 LOGGER = logging.getLogger(__name__)
 
 class MPLoader(BaseLoader):
-    """Loader for Materials Project data via their API.
-
-    Expects an API key if private endpoints are used.
-    """
 
     DEFAULT_BASE_URL: Final[str] = "https://materialsproject.org/api"
 
@@ -50,7 +30,7 @@ class MPLoader(BaseLoader):
     def source_dataset(self) -> str:
         return "summary"
 
-    def _download(self, dirpath: Path | str | None = None) -> Path:
+    def _download(self, dirpath: Path = None) -> Path:
         dirpath = Path(dirpath)
         dirpath.mkdir(parents=True, exist_ok=True)
         # Use self.config.api_key if present; fallback to environment variable
@@ -116,111 +96,84 @@ class MPLoader(BaseLoader):
 
         return dirpath
     
-    def _load_json(self, filepath: Path) -> pd.DataFrame:
-        with open(filepath, "r") as f:
-            data = json.load(f)
-              
-        field_names = CrystPQRecord.model_fields.keys()
-        columnar: Dict[str, List[Any]] = {k: [] for k in field_names}
-        for idoc, doc in enumerate(data):
-            if idoc % 10000 == 0:
-                LOGGER.debug("Loading document %d of %d", idoc, len(data))
-            structure_dict = doc.get("structure", None)
-            lattice_data = None
-            structure=None
-            species = None
-            frac_coords = None
-            cart_coords = None
-            
-            if structure_dict is not None:
-                structure = Structure.from_dict(structure_dict)
-                frac_coords = structure.frac_coords
-                cart_coords = structure.cart_coords
-                species = [specie.name for specie in structure.species]
-                lattice_data = LatticeData(
-                    matrix=structure.lattice.matrix,
-                    a=structure.lattice.a,
-                    b=structure.lattice.b,
-                    c=structure.lattice.c,
-                    alpha=structure.lattice.alpha,
-                    beta=structure.lattice.beta,
-                    gamma=structure.lattice.gamma,
-                    volume=structure.lattice.volume)
-
-            sym = doc.get("symmetry") or {}
-            symmetry = SymmetryData(
-                crystal_system=str(sym.get("crystal_system")) if sym.get("crystal_system") is not None else None,
-                symbol=sym.get("symbol"),
-                number=sym.get("number"),
-                point_group=sym.get("point_group"),
-                symprec=sym.get("symprec"),
-                angle_tolerance=sym.get("angle_tolerance"),
-                version=sym.get("version"),
-            )
-
-            hp = doc.get("has_props") or {}
-            has_props = HasPropsData(**hp) if isinstance(hp, dict) else None
-
-            
-            data = CrystPQData(
-                band_gap=doc.get("band_gap"),
-                
-                energy_total=doc.get("total_energy"),
-                energy_uncorrected=doc.get("uncorrected_energy"),
-                energy_corrected=doc.get("total_energy"),
-                energy_formation=doc.get("formation_energy_per_atom"),
-                energy_above_hull=doc.get("e_above_hull"),
-                
-                
-                n=doc.get("n"),
-                piezoelectric_modulus=doc.get("piezoelectric_modulus"),
-                e_electronic=doc.get("e_electronic"),
-                e_ionic=doc.get("e_ionic"),
-                e_total=doc.get("e_total"),
-                g_reuss=doc.get("g_reuss"),
-                g_voigt=doc.get("g_voigt"),
-                g_vrh=doc.get("g_vrh"),
-                k_reuss=doc.get("k_reuss"),
-                k_voigt=doc.get("k_voigt"),
-                k_vrh=doc.get("k_vrh"),
-                poisson_ratio=doc.get("poisson_ratio"),
-                surface_energy_anisotropy=doc.get("surface_energy_anisotropy"),
-                
-                weighted_work_function=doc.get("weighted_work_function"),
-                weighted_surface_energy=doc.get("weighted_surface_energy"),
-                total_magnetization=doc.get("total_magnetization"),
-                
-                magnetic_ordering=doc.get("magnetic_ordering"),
-                
-                is_gap_direct=doc.get("is_gap_direct", None),
-                is_stable=doc.get("is_stable", None),
-                
-                has_props=has_props,
-            )
-
-            record = CrystPQRecord(
-                source_database=self.source_database,
-                source_dataset=self.source_dataset,
-                source_id=str(doc.get("material_id", "")),
-                species=species,
-                frac_coords=frac_coords,
-                cart_coords=cart_coords,
-                lattice=lattice_data,
-                structure=structure,
-                symmetry=symmetry,
-                data=data
-            )
-            
-            record_dict = record.model_dump(mode="json")
-            for k in field_names:
-                columnar[k].append(record_dict[k])
-                
-        df = pd.DataFrame(columnar)
-                
-        return df
-    
-    def load(self, data_dirpath: Path) -> Iterable[pd.DataFrame]:
-        json_files = data_dirpath.glob("*.json")
+    def _load(self, dirpath: Path) -> Iterable[dict]:
+        json_files = dirpath.glob("*.json")
         for json_file in json_files:
-            df = self._load_json(json_file)
-            yield df
+            with open(json_file, "r") as f:
+                data = json.load(f)
+            yield data
+    
+    def _transform(self, table: pa.Table) -> pa.Table:
+        n_rows = len(table)
+        
+        data_fields = table.to_struct_array().combine_chunks()
+        structure = table["structure"].combine_chunks()
+        sites=pc.struct_field(structure,"sites")
+        charge = pc.struct_field(structure,"charge")
+        lattice_struct_array = pc.struct_field(structure,"lattice")
+        cart_coords = get_listArray_struct_fields(sites,["xyz"])["xyz"]
+        frac_coords = get_listArray_struct_fields(sites,["abc"])["abc"]
+        labels = get_listArray_struct_fields(sites,["label"])["label"]
+        species_list_array = get_listArray_struct_fields(sites,["species"])["species"]
+        
+        species_list_array = get_listArray_struct_fields(sites,["species"])["species"]
+        offsets = species_list_array.offsets
+        raw_element = pc.struct_field(species_list_array.flatten(recursive=True),"element")
+        elements = pa.ListArray.from_arrays(offsets,raw_element)
+
+        
+        source_database = [self.source_database] * n_rows
+        source_dataset = [self.source_dataset] * n_rows
+        source_id = pc.struct_field(data_fields,"material_id")
+        
+        has_props = pc.struct_field(data_fields,"has_props")
+        
+        data = pa.Table.from_pydict({
+                "band_gap":pc.struct_field(data_fields,"band_gap"),
+                "energy_total":pc.struct_field(data_fields,"total_energy"),
+                "energy_uncorrected":pc.struct_field(data_fields,"uncorrected_energy"),
+                "energy_corrected":pc.struct_field(data_fields,"total_energy"),
+                "energy_formation":pc.struct_field(data_fields,"formation_energy_per_atom"),
+                "energy_above_hull":pc.struct_field(data_fields,"e_above_hull"),
+                "n":pc.struct_field(data_fields,"n"),
+                "piezoelectric_modulus":pc.struct_field(data_fields,"piezoelectric_modulus"),
+                "e_electronic":pc.struct_field(data_fields,"e_electronic"),
+                "e_ionic":pc.struct_field(data_fields,"e_ionic"),
+                "e_total":pc.struct_field(data_fields,"e_total"),
+                "g_reuss":pc.struct_field(data_fields,"g_reuss"),
+                "g_voigt":pc.struct_field(data_fields,"g_voigt"),
+                "g_vrh":pc.struct_field(data_fields,"g_vrh"),
+                "k_reuss":pc.struct_field(data_fields,"k_reuss"),
+                "k_voigt":pc.struct_field(data_fields,"k_voigt"),
+                "k_vrh":pc.struct_field(data_fields,"k_vrh"),
+                "poisson_ratio":pc.struct_field(data_fields,"poisson_ratio"),
+                "surface_energy_anisotropy":pc.struct_field(data_fields,"surface_energy_anisotropy"),
+                
+                "weighted_work_function":pc.struct_field(data_fields,"weighted_work_function"),
+                "weighted_surface_energy":pc.struct_field(data_fields,"weighted_surface_energy"),
+                "total_magnetization":pc.struct_field(data_fields,"total_magnetization"),
+                
+                "magnetic_ordering":pc.struct_field(data_fields,"magnetic_ordering"),
+                
+                "is_gap_direct":pc.struct_field(data_fields,"is_gap_direct"),
+                "is_stable":pc.struct_field(data_fields,"is_stable"),
+        })
+        
+        
+        symmetry = pc.struct_field(data_fields,"symmetry")
+        
+        pqdb_data = {
+            "source_database":source_database,
+            "source_dataset":source_dataset,
+            "source_id":source_id,
+            "species":elements,
+            "cart_coords":cart_coords,
+            "frac_coords":frac_coords,
+            "lattice":lattice_struct_array,
+            "structure":structure,
+            "data":data.to_struct_array().combine_chunks(),
+            "has_props":has_props,
+            "symmetry":symmetry,
+        }
+        
+        return pa.Table.from_pydict(pqdb_data)

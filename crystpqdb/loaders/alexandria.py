@@ -7,30 +7,18 @@ import re
 import shutil
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Final, Iterable, List, Optional, Type
+from typing import Final, Iterable, List
 
-import numpy as np
-import pandas as pd
 import pyarrow as pa
+import pyarrow.compute as pc
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from mp_api.client import MPRester
-from parquetdb import ParquetDB
-from pymatgen.core.structure import Structure
 
-from crystpqdb.db import (
-    CrystPQData,
-    HasPropsData,
-    LatticeDict,
-    DataDict,
-    SymmetryData,
-    StructureDict,
-)
 from crystpqdb.loaders.base import BaseLoader, LoaderConfig
 from crystpqdb.utils.pyarrow_utils import get_listArray_struct_fields
+
 load_dotenv()
 
 CHUNK_BYTES: Final[int] = 1024 * 1024
@@ -144,66 +132,63 @@ class BaseAlexandriaLoader(BaseLoader):
 
         return dirpath
     
-    def load(self, data_dirpath: Path) -> Iterable[pd.DataFrame]:
+    def _load(self, data_dirpath: Path) -> Iterable[dict]:
         json_files = data_dirpath.glob("*.json")
         for json_file in json_files:
             with open(json_file, "r") as f:
                 data = json.load(f)
             yield data.get("entries", [])
             
-    def transform(self, table: pa.Table) -> pd.DataFrame:
-        import pyarrow.compute as pc
-
-        # transformed_df = pd.DataFrame()
+    def _transform(self, table: pa.Table) -> pa.Table:
         n_rows = len(table)
-
-        structure = table["structure"].combine_chunks()
-        data_fields = table["data"].combine_chunks()
-        data_dict = DataDict(**{
-            "band_gap_ind": pc.struct_field(data_fields,"band_gap_ind").to_pandas().values,
-            "band_gap_dir": pc.struct_field(data_fields,"band_gap_dir").to_pandas().values,
-            "dos_ef": pc.struct_field(data_fields,"dos_ef").to_pandas().values,
-            "energy_total": pc.struct_field(data_fields,"energy_total").to_pandas().values,
-            "energy_uncorrected": pc.struct_field(data_fields,"energy_total").to_pandas().values,
-            "energy_corrected": pc.struct_field(data_fields,"energy_corrected").to_pandas().values,
-            "energy_formation": pc.struct_field(data_fields,"e_form").to_pandas().values,
-            "energy_above_hull": pc.struct_field(data_fields,"e_above_hull").to_pandas().values,
-            "energy_phase_seperation": pc.struct_field(data_fields,"e_phase_separation").to_pandas().values,
-            "total_magnetization": pc.struct_field(data_fields,"total_mag").to_pandas().values,
-        })
         
+        data_fields = table["data"].combine_chunks()
+        structure = table["structure"].combine_chunks()
         sites=pc.struct_field(structure,"sites")
         charge = pc.struct_field(structure,"charge")
-        lattice = pc.struct_field(structure,"lattice")
+        lattice_struct_array = pc.struct_field(structure,"lattice")
         cart_coords = get_listArray_struct_fields(sites,["xyz"])["xyz"]
         frac_coords = get_listArray_struct_fields(sites,["abc"])["abc"]
         labels = get_listArray_struct_fields(sites,["label"])["label"]
         species_list_array = get_listArray_struct_fields(sites,["species"])["species"]
-        
         
         species_list_array = get_listArray_struct_fields(sites,["species"])["species"]
         offsets = species_list_array.offsets
         raw_element = pc.struct_field(species_list_array.flatten(recursive=True),"element")
         elements = pa.ListArray.from_arrays(offsets,raw_element)
 
-        df = pd.DataFrame(
-            {
-            "source_database":[self.source_database] * n_rows,
-            "source_dataset":[self.source_dataset] * n_rows,
-            "source_id":pc.struct_field(data_fields,"mat_id").tolist(),
-            "species":elements.tolist(),
-            "cart_coords":cart_coords.tolist(),
-            "frac_coords":frac_coords.tolist(),
-            "lattice":lattice.tolist(),
+        
+        source_database = [self.source_database] * n_rows
+        source_dataset = [self.source_dataset] * n_rows
+        source_id = pc.struct_field(data_fields,"mat_id")
+        
+        data = pa.Table.from_pydict({
+            "band_gap_ind":pc.struct_field(data_fields,"band_gap_ind"),
+            "band_gap_dir":pc.struct_field(data_fields,"band_gap_dir"),
+            "dos_ef":pc.struct_field(data_fields,"dos_ef"),
+            "energy_total":pc.struct_field(data_fields,"energy_total"),
+            "energy_uncorrected":pc.struct_field(data_fields,"energy_total"),
+            "energy_corrected":pc.struct_field(data_fields,"energy_corrected"),
+            "energy_formation":pc.struct_field(data_fields,"e_form"),
+            "energy_above_hull":pc.struct_field(data_fields,"e_above_hull"),
+            "energy_phase_seperation":pc.struct_field(data_fields,"e_phase_separation"),
+            "total_magnetization":pc.struct_field(data_fields,"total_mag"),
         })
         
-        struct_table = pa.Table.from_struct_array(structure)
-        structure = struct_table.drop(['@module', '@class']).to_struct_array()
-        df["structure"] = structure.to_pandas()
-        print(df['structure'].iloc[0])
+        pqdb_data = {
+            "source_database":source_database,
+            "source_dataset":source_dataset,
+            "source_id":source_id,
+            "species":elements,
+            "cart_coords":cart_coords,
+            "frac_coords":frac_coords,
+            "lattice":lattice_struct_array,
+            "structure":structure,
+            "data":data.to_struct_array().combine_chunks(),
+        }
         
-        df["data"] = pd.Series(data_dict)
-        return CrystPQData.validate(df)
+        return pa.Table.from_pydict(pqdb_data)
+ 
 
 
 
