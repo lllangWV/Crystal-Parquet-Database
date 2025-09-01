@@ -16,6 +16,27 @@ objects.
 - **LoaderFactory**: Helper that returns the correct loader instance given a
   `database_name` and `dataset_name`.
 
+### Intended Workflow
+
+The intended workflow for use of these loaders is the following. 
+
+```python
+loader = Loader()
+table = loader.run()
+```
+
+Some method will create the instances of the loader and then the ``run`` method will called to run the pipeline of the loader.
+
+Interally the run method is executing the following steps in order:
+
+1. `loader.download()`: Download the data from the source database and dataset in its raw format.
+2. `loader.load()`: Load the data into a consistent dataframe to be ingested into ParquetDB to perform data inference and normalization.
+3. `loader.ingest_pqdb()`: Ingest the data into ParquetDB to perform data inference, normalization, and validation.
+4. `loader.normalize_pqdb()`: Normalize the disitribution of data across files and row groups.
+5. `loader.read_pyarrow_table(rebuild_nested_struct=True)`: Read the ParquetDB into a PyArrow Table rebuilding any nested structure
+6. `loader.transform()`: Transform the data into a unified schema.
+
+
 ### BaseLoader contract
 
 Each loader subclass must implement the following members:
@@ -25,138 +46,40 @@ Each loader subclass must implement the following members:
 - `_download(dirpath: Path) -> Path`
   - Download or update the raw dataset into `dirpath` as a directory of JSON
     files and return that directory path.
-- `load(filepath: Path) -> pandas.DataFrame`
-  - Read a single raw JSON file and return a pandas DataFrame where each row is
-    a serialized core record conforming to the unified schema.
+- `_load(dirpath: Path) -> Iterable`
+  - This method defines how the data is loaded into a consistent dataframe to be ingested into ParquetDB to perform data inference and normalization. This is typically a list of records, a dictionary of arrays, a `pandas DataFrame`, or a `pyarrow Table`.
+- `_transform(table: pyarrow.Table) -> pyarrow.Table`
+  - This method defines how the data is transformed into a unified schema. The incoming data will be in a `pyarrow Table` and the outgoing data will be a `pyarrow Table` with the unified schema. The logic of how this is done is left to the subclass.
 
-BaseLoader also provides:
+The above abstract methods are wraped with the following public methods. This is done to provide a consistent interface to the user and take care of some business logic in the procesing of the data.
 
 - `download(dirpath: Optional[Path] = None) -> Path`
   - Orchestrates downloading. By default, uses
     `data_dir/<source_database>/<source_dataset>`.
+- `load(dirpath: Path) -> Iterable`
+  - Load the data into a consistent dataframe to be ingested into ParquetDB to perform data inference and normalization.
 - `transform(df: pandas.DataFrame) -> pandas.DataFrame`
-  - Optional hook to post-process the DataFrame (identity by default).
-- `__iter__()`
-  - Iterates over raw JSON files and yields processed DataFrames per file.
+  - Transform the data into a unified schema.
 
 ### Data locations
 
+
+#### 1. Raw Data Files
 By default, raw files are materialized under:
 
 ```
-<data_dir>/<source_database>/<source_dataset>/
+<data_dir>/<source_database>/<source_dataset>/raw/
 ```
 
-For example: `data/mp/summary/` or `data/alex/3d/`.
+For example: `data/mp/summary/raw` or `data/alex/3d/raw`.
 
-### Supported loaders
+#### 2. Interim Data Files
 
-- `mp/summary` via `MPLoader` (Materials Project API; requires API key)
-- `alex/1d`, `alex/2d`, `alex/3d` via `Alexandria*Loader` (HTTP index of
-  compressed JSON, downloaded and decompressed locally)
+Intermediate steps of in the loading process are materialized under:
 
-### Quickstart
-
-```python
-from crystpqdb.loaders import LoaderConfig, get_loader
-
-# Configure where data are stored and any source-specific settings
-config = LoaderConfig(
-    data_dir="./data",      # root data directory
-    api_key="<MP_API_KEY>", # for MP; or set env var MP_API_KEY
-    from_scratch=False,
-)
-
-# Obtain a loader via the factory
-loader = get_loader("mp", "summary", config)
-
-# Download raw dataset (directory of JSON files)
-raw_dir = loader.download()
-print(raw_dir)
-
-# Iterate over raw files; each iteration yields a processed DataFrame
-for df in loader:
-    print(df.shape)
-
-# Optionally concatenate into one DataFrame
-# import pandas as pd
-# all_df = pd.concat(list(loader), ignore_index=True)
+```
+<data_dir>/<source_database>/<source_dataset>/interim/
 ```
 
-Alexandria example:
-
-```python
-alex_loader = get_loader("alex", "3d", LoaderConfig(data_dir="./data"))
-for df in alex_loader:
-    print(df.shape)
-```
-
-### Configuration
-
-`LoaderConfig` fields (common across loaders):
-
-- `data_dir: Path | str` — Root directory to store datasets
-- `api_key: Optional[str]` — API token if required by the source (e.g., MP)
-- `base_url: Optional[str]` — Override default remote base URL
-- `timeout_seconds: int` — Network request timeout
-- `num_workers: int` — Parallelism for I/O bound work (downloads/decompression)
-- `from_scratch: bool` — If true, remove any existing local data before
-  downloading
-
-Notes:
-- For Materials Project, provide `api_key` or set environment variable
-  `MP_API_KEY`.
-
-### Implementing a new loader
-
-1) Subclass `BaseLoader` and implement the required members.
-2) Register your loader in `LoaderFactory.loaders` so the factory can return it.
-
-Skeleton:
-
-```python
-from pathlib import Path
-import pandas as pd
-from crystpqdb.loaders.base import BaseLoader
-
-class MySourceFooLoader(BaseLoader):
-    @property
-    def source_database(self) -> str:
-        return "my_source"
-
-    @property
-    def source_dataset(self) -> str:
-        return "foo"
-
-    def _download(self, dirpath: Path) -> Path:
-        # Fetch remote data and write JSON files under dirpath
-        dirpath.mkdir(parents=True, exist_ok=True)
-        # ... write one or more *.json files ...
-        return dirpath
-
-    def load(self, filepath: Path) -> pd.DataFrame:
-        # Read one raw JSON file and produce a DataFrame of unified records
-        # (each row corresponds to a serialized core record)
-        # return pd.DataFrame([...])
-        raise NotImplementedError
-```
-
-Finally, add an entry to the factory mapping so clients can call
-`get_loader("my_source", "foo", config)`.
-
-### Error handling and discovery
-
-- If an invalid `(database_name, dataset_name)` pair is requested, the factory
-  raises a `ValueError`. Use the factory helpers during development:
-  - `LoaderFactory(config).list_databases()`
-  - `LoaderFactory(config).list_datasets(database_name)`
-  - `LoaderFactory(config).available_loaders()`
-
-### What the loader returns
-
-- `download()` returns the directory containing the raw JSON files.
-- `load(filepath)` returns a pandas DataFrame with rows that serialize the core
-  data model (e.g., lattice, structure, symmetry, and properties) into a
-  unified schema.
-
+For example: `data/mp/summary/interim` or `data/alex/3d/interim`.
 
